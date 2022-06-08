@@ -1,3 +1,5 @@
+{-# LANGUAGE BlockArguments #-}
+{-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE GADTs #-}
@@ -54,7 +56,7 @@ data Account = Account
   }
 
 class Editable a where
-  type Exposed a
+  data Exposed a
   zero :: Exposed a
   expose :: a -> Exposed a
   suggest :: Exposed a -> [Exposed a]
@@ -62,11 +64,11 @@ class Editable a where
   assemble :: Exposed a -> Maybe a
 
 instance Editable Text where
-  type Exposed Text = TextZipper Text
+  newtype Exposed Text = ExposedText { unExposedText :: TextZipper Text }
   zero = expose ("" :: Text)
-  expose t = textZipper [t] Nothing
+  expose t = ExposedText $ textZipper [t] Nothing
   suggest = const []
-  assemble = Just . Text.concat . TextZipper.getText
+  assemble = Just . Text.concat . TextZipper.getText . unExposedText
 
 exposeShow :: Show a => a -> TextZipper String
 exposeShow i = stringZipper [show i] (Just 1)
@@ -75,23 +77,29 @@ assembleRead :: Read a => TextZipper String -> Maybe a
 assembleRead = readMaybe . concat . TextZipper.getText
 
 instance Editable Int where
-  type Exposed Int = TextZipper String
+  newtype Exposed Int = ExposedInt { unExposedInt :: TextZipper String }
   zero = expose (0 :: Int)
-  expose = exposeShow
-  assemble = assembleRead
+  expose = ExposedInt . exposeShow
+  assemble = assembleRead . unExposedInt
 
 instance Editable Role where
-  type Exposed Role = TextZipper String
-  zero = stringZipper [] Nothing
-  expose = exposeShow
+  newtype Exposed Role = ExposedRole { unExposedRole :: TextZipper String }
+  zero = ExposedRole $ stringZipper [] Nothing
+  expose = ExposedRole . exposeShow
   suggest = const $ map expose [Admin, User]
-  assemble = assembleRead
+  assemble = assembleRead . unExposedRole
 
 instance Editable a => Editable [a] where
-  type Exposed [a] = ListCursor (Node a)
-  zero = emptyListCursor
-  expose = makeListCursor . map Complete
-  assemble = traverse assembleNode . rebuildListCursor
+  newtype Exposed [a] = ExposedList { unExposedList :: ListCursor (Node a) }
+  zero = ExposedList emptyListCursor
+  expose = ExposedList . makeListCursor . map Complete
+  assemble = traverse assembleNode . rebuildListCursor . unExposedList
+
+instance Editable UTCTime where
+  newtype Exposed UTCTime = ExposedUTCTime { unExposedUTCTime :: TextZipper String }
+  zero = ExposedUTCTime $ stringZipper [] Nothing
+  expose = ExposedUTCTime . exposeShow
+  assemble = assembleRead . unExposedUTCTime
 
 data Node a
   = Exposed !(Exposed a)
@@ -108,18 +116,20 @@ assembleNode :: Editable a => Node a -> Maybe a
 assembleNode (Exposed x) = assemble x
 assembleNode (Complete x) = Just x
 
-data EditingBefore f
-  = Constructor f
-  | forall i. BeforeField (EditingBefore (i -> f)) (Node i)
+-- Resolves to a
+data EditingBefore a
+  = Constructor a
+  | forall i. Editable i => BeforeField (EditingBefore (i -> a)) (Node i)
 
-data EditingAfter a o
-  = Finisher (a -> o)
-  | forall i. AfterField (Node i) (EditingAfter (i -> o) o)
+-- Resolves to x -> a
+data EditingAfter a where
+  Finisher   :: (x -> a) -> EditingAfter (x -> a)
+  AfterField :: Editable i => Node i -> EditingAfter (x -> a) -> EditingAfter ((i -> x) -> a)
 
-data EditingRecord o = forall a i. EditingRecord
+data EditingRecord o = forall a i. Editable i => EditingRecord
   { erBefore  :: EditingBefore (i -> a)
   , erCurrent :: Exposed i
-  , erAfter   :: EditingAfter a o
+  , erAfter   :: EditingAfter (a -> o)
   }
 
 recordNextField :: EditingRecord a -> Maybe (EditingRecord a)
@@ -140,19 +150,39 @@ recordPrevField (EditingRecord (BeforeField before newCurrent) current after) = 
     , erAfter = AfterField (pack current) after
     }
 
+assembleBefore :: EditingBefore a -> Maybe a
+assembleBefore (Constructor c) = pure c
+assembleBefore (BeforeField before f) = assembleBefore before <*> assembleNode f
+
+assembleAfter :: EditingAfter (a -> b) -> Maybe (a -> b)
+assembleAfter (Finisher f) = pure f
+assembleAfter (AfterField f after) = do
+  af <- assembleNode f
+  aafter <- assembleAfter after
+  pure \c -> aafter (c af)
+
+assembleEditingRecord :: EditingRecord a -> Maybe a
+assembleEditingRecord EditingRecord { erBefore, erCurrent, erAfter } = do
+  c <- assembleBefore erBefore
+  x <- assemble erCurrent
+  f <- assembleAfter erAfter
+  pure $ f $ c x
+
 instance Editable Session where
-  type Exposed Session = EditingRecord Session
-  expose session = EditingRecord
-    { erBefore = Constructor Session :: EditingBefore (Text -> UTCTime -> Session)
-    , erCurrent = sessionSecret session :: Exposed Text
-    , erAfter = AfterField (pack (sessionExpiresAt)) (Finisher id) :: EditingAfter (UTCTime -> Session) Session
+  newtype Exposed Session = ExposedSession { unExposedSession :: EditingRecord Session }
+  zero = ExposedSession EditingRecord
+    { erBefore = Constructor Session
+    , erCurrent = zero
+    , erAfter = AfterField (pack zero) (Finisher id)
     }
 
-  assemble er = do
-    pure $ Session
-      { sessionSecret = undefined
-      , sessionExpiresAt = undefined
-      }
+  expose session = ExposedSession EditingRecord
+    { erBefore = Constructor Session :: EditingBefore (Text -> UTCTime -> Session)
+    , erCurrent = expose $ sessionSecret session :: Exposed Text
+    , erAfter = AfterField (Complete (sessionExpiresAt session)) (Finisher id)
+    }
+
+  assemble = assembleEditingRecord . unExposedSession
 
 --instance Editable Role where
 --  edit = options
