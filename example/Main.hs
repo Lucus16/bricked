@@ -77,7 +77,7 @@ class Editable a where
 
 drawLine :: Zipper Char -> Widget
 drawLine = Brick.showCursor "cursor" . Location . (,0) . length . Zipper.before
-  <*> Brick.strWrap . Zipper.toList
+  <*> Brick.str . Zipper.toList
 
 instance Editable Text where
   newtype Exposed Text = ExposedText { unExposedText :: TextZipper Text }
@@ -107,7 +107,7 @@ handleKeyForTextZipper [] Vty.KUp    = Just . TextZipper.moveUp
 handleKeyForTextZipper _ _           = const Nothing
 
 handleKeyForLine :: [Vty.Modifier] -> Vty.Key -> Zipper Char -> Maybe (Zipper Char)
-handleKeyForLine []          (Vty.KChar c)   = Just . Zipper.insert c
+handleKeyForLine []          (Vty.KChar c)   = Zipper.toNext . Zipper.insert c
 handleKeyForLine [Vty.MCtrl] (Vty.KChar 'a') = Zipper.toStart
 handleKeyForLine [Vty.MCtrl] (Vty.KChar 'e') = Zipper.toEnd
 
@@ -152,7 +152,7 @@ instance Editable Int where
   assemble = assembleRead . unExposedInt
   handleKey mods key = fmap ExposedInt . handleKeyForLine mods key . unExposedInt
   drawExposed = drawLine . unExposedInt
-  drawAssembled = Brick.strWrap . show
+  drawAssembled = Brick.str . show
 
 instance Editable Word64 where
   newtype Exposed Word64 = ExposedWord64 { unExposedWord64 :: Zipper Char }
@@ -234,7 +234,7 @@ assembleNode (Exposed x) = assemble x
 assembleNode (Complete x) = Just x
 
 drawNode :: Editable a => Node a -> Widget
-drawNode (Exposed x) = dropCursor $ drawExposed x
+drawNode (Exposed x) = invalid $ dropCursor $ drawExposed x
 drawNode (Complete x) = drawAssembled x
 
 -- Resolves to a
@@ -344,13 +344,29 @@ data EditingShowRead a = (Show a, Read a) => EditingShowRead Text
 --  | EditingRecord
 --  | Complete a
 
+focussed :: Widget -> Widget
+focussed = Brick.withAttr $ Brick.attrName "focussed"
+
+invalid :: Widget -> Widget
+invalid = Brick.withAttr $ Brick.attrName "invalid"
+
+attrMap = Brick.attrMap Vty.defAttr
+  [ attr "focussed" $ bg Vty.brightBlack
+  , attr "invalid"  $ bg Vty.red . style Vty.underline
+  ]
+  where
+    attr :: String -> (Vty.Attr -> Vty.Attr) -> (Brick.AttrName, Vty.Attr)
+    attr name f = (Brick.attrName name, f Vty.currentAttr)
+    bg    = flip Vty.withBackColor
+    style = flip Vty.withStyle
+
 app :: (Editable a) => Brick.App (Exposed a) e Text
 app = Brick.App
   { appDraw = pure . drawExposed
   , appChooseCursor = Brick.showFirstCursor
   , appHandleEvent = handleEvent
   , appStartEvent = pure
-  , appAttrMap = const $ Brick.attrMap Vty.defAttr []
+  , appAttrMap = const attrMap
   }
 
 handleEvent :: (Editable a) => Exposed a -> Brick.BrickEvent Text e -> Brick.EventM Text (Brick.Next (Exposed a))
