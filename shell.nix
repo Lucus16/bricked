@@ -1,4 +1,4 @@
-{ ghcName ? "ghc922", pkgs ? import <nixpkgs> { } }:
+{ ghcName ? "ghc924", pkgs ? import <nixpkgs> { } }:
 
 let
   haskellPackages = if (ghcName != null) then
@@ -8,6 +8,7 @@ let
 
   ghc = haskellPackages.ghcWithHoogle (h:
     with h; [
+      aeson
       brick
       containers
       cursor

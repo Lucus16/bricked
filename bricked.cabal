@@ -14,19 +14,21 @@ library
     , text               >= 1.0   && < 2.0
     , brick              >= 0.68  && < 1.0
 
-  other-extensions:
-    OverloadedStrings
-
   default-extensions:
     ImportQualifiedPost
+
+  other-extensions:
+    OverloadedStrings
 
 executable example
   hs-source-dirs:        example
   main-is:               Main.hs
   ghc-options:           -threaded
+  default-language:      Haskell2010
 
   build-depends:
-      base               >= 4.16  && < 4.17
+      aeson              >= 2.0   && < 3
+    , base               >= 4.16  && < 4.17
     , brick              >= 0.68  && < 1
     , bytestring         >= 0.11  && < 0.12
     , cursor             >= 0.3   && < 0.4
@@ -38,3 +40,23 @@ executable example
 
   default-extensions:
     ImportQualifiedPost
+    BlockArguments
+
+executable counter
+  hs-source-dirs:        counter
+  main-is:               Main.hs
+  ghc-options:           -threaded
+  default-language:      Haskell2010
+
+  build-depends:
+      base               >= 4.16  && < 4.17
+    , brick              >= 0.68  && < 1
+    , bytestring         >= 0.11  && < 0.12
+    , cursor             >= 0.3   && < 0.4
+    , text               >= 1.0   && < 2
+    , time               >= 1.11  && < 1.12
+    , vty                >= 5.33  && < 6
+
+  default-extensions:
+    ImportQualifiedPost
+    BlockArguments

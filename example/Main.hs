@@ -1,12 +1,17 @@
 {-# LANGUAGE BlockArguments #-}
+{-# LANGUAGE DerivingVia #-}
+{-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE GADTs #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE StandaloneDeriving #-}
 {-# LANGUAGE TypeFamilies #-}
-{-# LANGUAGE GADTs #-}
 
 module Main where
 
-import Control.Monad ((>=>))
+import Control.Monad ((>=>), void)
 import Cursor.List
 import Cursor.Text
 import Cursor.TextField
@@ -16,9 +21,10 @@ import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import Data.Text qualified as Text
 import Data.Text.IO qualified as Text
-import Data.Text.Zipper (TextZipper, stringZipper, textZipper)
+import Data.Text.Zipper (TextZipper, deleteChar, deletePrevChar, gotoBOL, gotoEOL, insertChar, moveDown, moveLeft, moveRight, moveUp, stringZipper, textZipper)
 import Data.Text.Zipper qualified as TextZipper
 import Data.Time.Clock (UTCTime)
+import Data.Tuple (swap)
 import Data.Word (Word64)
 import System.Directory ()
 import System.Environment (getArgs)
@@ -35,11 +41,6 @@ import Brick.Widgets.Core qualified as Brick
 import Graphics.Vty.Attributes qualified as Vty
 import Graphics.Vty.Input.Events qualified as Vty
 
-data Role
-  = Admin
-  | User
-  deriving (Read, Show)
-
 newtype Password = Password ByteString
 
 data Session = Session
@@ -55,20 +56,57 @@ data Account = Account
   , accSessions :: [Session]
   }
 
+data Coordinate a = Coordinate a a
+
 class Editable a where
   data Exposed a
-  zero :: Exposed a
+  blank :: Exposed a
   expose :: a -> Exposed a
   suggest :: Exposed a -> [Exposed a]
   suggest = const []
   assemble :: Exposed a -> Maybe a
+  handleKey :: [Vty.Modifier] -> Vty.Key -> Exposed a -> Maybe (Exposed a)
 
 instance Editable Text where
   newtype Exposed Text = ExposedText { unExposedText :: TextZipper Text }
-  zero = expose ("" :: Text)
+  blank = expose ("" :: Text)
   expose t = ExposedText $ textZipper [t] Nothing
   suggest = const []
   assemble = Just . Text.concat . TextZipper.getText . unExposedText
+
+  handleKey []          (Vty.KChar c)   = Just . ExposedText . insertChar c . unExposedText
+  handleKey [Vty.MCtrl] (Vty.KChar 'a') = Just . ExposedText . gotoBOL . unExposedText
+  handleKey [Vty.MCtrl] (Vty.KChar 'e') = Just . ExposedText . gotoEOL . unExposedText
+
+  handleKey [] Vty.KLeft  = Just . ExposedText . TextZipper.moveLeft . unExposedText
+  handleKey [] Vty.KRight = Just . ExposedText . TextZipper.moveRight . unExposedText
+  handleKey [] Vty.KUp    = Just . ExposedText . TextZipper.moveUp . unExposedText
+  handleKey [] Vty.KDown  = Just . ExposedText . TextZipper.moveDown . unExposedText
+  handleKey [] Vty.KHome  = Just . ExposedText . TextZipper.gotoBOL . unExposedText
+  handleKey [] Vty.KEnd   = Just . ExposedText . TextZipper.gotoEOL . unExposedText
+  handleKey [] Vty.KBS    = Just . ExposedText . TextZipper.deletePrevChar . unExposedText
+  handleKey [] Vty.KDel   = Just . ExposedText . TextZipper.deleteChar . unExposedText
+  handleKey [] Vty.KEnter = Just . ExposedText . TextZipper.breakLine . unExposedText
+  handleKey _ _           = const Nothing
+
+  --Vty.KLeft   -> mDo textFieldCursorSelectPrevChar
+  --Vty.KRight  -> mDo textFieldCursorSelectNextChar
+  --Vty.KUp     -> mDo textFieldCursorSelectPrevLine
+  --Vty.KDown   -> mDo textFieldCursorSelectNextLine
+  --Vty.KBS     -> mDo (textFieldCursorRemove >=> Cursor.dullDelete)
+  --Vty.KDel    -> mDo (textFieldCursorDelete >=> Cursor.dullDelete)
+  --Vty.KChar c -> continue . fromMaybe tc $ textFieldCursorInsertChar c $ Just tc
+
+class Drawable a where
+  draw :: a -> [Widget Text]
+
+instance Drawable (TextZipper Text) where
+  draw tz = pure
+    $ Brick.showCursor "cursor" (Location $ swap $ TextZipper.cursorPosition tz)
+    $ Brick.txtWrap (Text.concat $ map (<>"\n") $ TextZipper.getText tz)
+
+instance Drawable (Exposed Text) where
+  draw = draw . unExposedText
 
 exposeShow :: Show a => a -> TextZipper String
 exposeShow i = stringZipper [show i] (Just 1)
@@ -76,28 +114,70 @@ exposeShow i = stringZipper [show i] (Just 1)
 assembleRead :: Read a => TextZipper String -> Maybe a
 assembleRead = readMaybe . concat . TextZipper.getText
 
+newtype ReadShowEditable a = ReadShowEditable a
+  deriving newtype (Read, Show)
+
+instance (Read a, Show a) => Editable (ReadShowEditable a) where
+  newtype Exposed (ReadShowEditable a) = ExposedByReadShow { unExposedByReadShow :: TextZipper String }
+  blank = ExposedByReadShow $ stringZipper [""] (Just 1)
+  expose i = ExposedByReadShow $ stringZipper [show i] (Just 1)
+  suggest = const []
+  assemble = readMaybe . concat . TextZipper.getText . unExposedByReadShow
+
+  handleKey []          (Vty.KChar c)   = Just . ExposedByReadShow . insertChar c . unExposedByReadShow
+  handleKey [Vty.MCtrl] (Vty.KChar 'a') = Just . ExposedByReadShow . gotoBOL . unExposedByReadShow
+  handleKey [Vty.MCtrl] (Vty.KChar 'e') = Just . ExposedByReadShow . gotoEOL . unExposedByReadShow
+
+  handleKey [] Vty.KLeft  = Just . ExposedByReadShow . moveLeft . unExposedByReadShow
+  handleKey [] Vty.KRight = Just . ExposedByReadShow . moveRight . unExposedByReadShow
+  handleKey [] Vty.KUp    = Just . ExposedByReadShow . moveUp . unExposedByReadShow
+  handleKey [] Vty.KDown  = Just . ExposedByReadShow . moveDown . unExposedByReadShow
+  handleKey [] Vty.KBS    = Just . ExposedByReadShow . deletePrevChar . unExposedByReadShow
+  handleKey [] Vty.KDel   = Just . ExposedByReadShow . deleteChar . unExposedByReadShow
+  handleKey _ _           = const Nothing
+
+--deriving via (ReadShowEditable Int) instance Editable Int
+
 instance Editable Int where
   newtype Exposed Int = ExposedInt { unExposedInt :: TextZipper String }
-  zero = expose (0 :: Int)
+  blank = expose (0 :: Int)
   expose = ExposedInt . exposeShow
   assemble = assembleRead . unExposedInt
 
+  handleKey [] Vty.KLeft     = Just . ExposedInt . moveLeft . unExposedInt
+  handleKey [] Vty.KRight    = Just . ExposedInt . moveRight . unExposedInt
+  handleKey [] Vty.KBS       = Just . ExposedInt . deletePrevChar . unExposedInt
+  handleKey [] Vty.KDel      = Just . ExposedInt . deleteChar . unExposedInt
+  handleKey [] (Vty.KChar c) = Just . ExposedInt . insertChar c . unExposedInt
+  handleKey _ _              = const Nothing
+
+instance Editable Word64 where
+  newtype Exposed Word64 = ExposedWord64 { unExposedWord64 :: TextZipper String }
+  blank = expose (0 :: Word64)
+  expose = ExposedWord64 . exposeShow
+  assemble = assembleRead . unExposedWord64
+
+data Role
+  = User
+  | Admin
+  deriving (Read, Show)
+
 instance Editable Role where
   newtype Exposed Role = ExposedRole { unExposedRole :: TextZipper String }
-  zero = ExposedRole $ stringZipper [] Nothing
+  blank = ExposedRole $ stringZipper [] Nothing
   expose = ExposedRole . exposeShow
   suggest = const $ map expose [Admin, User]
   assemble = assembleRead . unExposedRole
 
 instance Editable a => Editable [a] where
   newtype Exposed [a] = ExposedList { unExposedList :: ListCursor (Node a) }
-  zero = ExposedList emptyListCursor
+  blank = ExposedList emptyListCursor
   expose = ExposedList . makeListCursor . map Complete
   assemble = traverse assembleNode . rebuildListCursor . unExposedList
 
 instance Editable UTCTime where
   newtype Exposed UTCTime = ExposedUTCTime { unExposedUTCTime :: TextZipper String }
-  zero = ExposedUTCTime $ stringZipper [] Nothing
+  blank = ExposedUTCTime $ stringZipper [] Nothing
   expose = ExposedUTCTime . exposeShow
   assemble = assembleRead . unExposedUTCTime
 
@@ -170,10 +250,10 @@ assembleEditingRecord EditingRecord { erBefore, erCurrent, erAfter } = do
 
 instance Editable Session where
   newtype Exposed Session = ExposedSession { unExposedSession :: EditingRecord Session }
-  zero = ExposedSession EditingRecord
+  blank = ExposedSession EditingRecord
     { erBefore = Constructor Session
-    , erCurrent = zero
-    , erAfter = AfterField (pack zero) (Finisher id)
+    , erCurrent = blank
+    , erAfter = AfterField (pack blank) (Finisher id)
     }
 
   expose session = ExposedSession EditingRecord
@@ -184,12 +264,22 @@ instance Editable Session where
 
   assemble = assembleEditingRecord . unExposedSession
 
---instance Editable Role where
---  edit = options
---    [ atom "Admin" Admin
---    , atom "User" User
---    ]
---
+instance Editable a => Editable (Coordinate a) where
+  newtype Exposed (Coordinate a) = ExposedCoordinate { unExposedCoordinate :: EditingRecord (Coordinate a) }
+  blank = ExposedCoordinate EditingRecord
+    { erBefore = Constructor Coordinate
+    , erCurrent = blank
+    , erAfter = AfterField (pack blank) (Finisher id)
+    }
+
+  expose (Coordinate x y) = ExposedCoordinate EditingRecord
+    { erBefore = Constructor Coordinate
+    , erCurrent = expose x
+    , erAfter = AfterField (Complete y) (Finisher id)
+    }
+
+  assemble = assembleEditingRecord . unExposedCoordinate
+
 --instance Editable Account where
 --  edit = record Account
 --    <$> field "name"
@@ -213,7 +303,7 @@ data EditingShowRead a = (Show a, Read a) => EditingShowRead Text
 --  | EditingRecord
 --  | Complete a
 
-app :: Brick.App TextFieldCursor e Text
+app :: Brick.App (Exposed Text) e Text
 app = Brick.App
   { appDraw = draw
   , appChooseCursor = Brick.showFirstCursor
@@ -222,32 +312,25 @@ app = Brick.App
   , appAttrMap = const $ Brick.attrMap Vty.defAttr []
   }
 
-draw :: TextFieldCursor -> [Widget Text]
-draw tc = pure
-  $ Brick.showCursor "cursor" (Location (x, y))
-  $ Brick.txtWrap (rebuildTextFieldCursor tc)
-  where
-    (y, x) = textFieldCursorSelection tc
+handleEvent :: Exposed Text -> Brick.BrickEvent Text e -> Brick.EventM Text (Brick.Next (Exposed Text))
+handleEvent tz (Brick.VtyEvent (Vty.EvKey Vty.KEsc mods)) = halt tz
+handleEvent tz (Brick.VtyEvent (Vty.EvKey key mods)) =
+  continue $ fromMaybe tz $ handleKey mods key tz
 
-handleEvent :: TextFieldCursor -> Brick.BrickEvent Text e -> Brick.EventM Text (Brick.Next TextFieldCursor)
-handleEvent tc (Brick.VtyEvent (Vty.EvKey key mods)) = case key of
-  Vty.KLeft   -> mDo textFieldCursorSelectPrevChar
-  Vty.KRight  -> mDo textFieldCursorSelectNextChar
-  Vty.KUp     -> mDo textFieldCursorSelectPrevLine
-  Vty.KDown   -> mDo textFieldCursorSelectNextLine
-  Vty.KEsc    -> halt tc
-  Vty.KEnter  -> halt tc
-  Vty.KBS     -> mDo (textFieldCursorRemove >=> Cursor.dullDelete)
-  Vty.KDel    -> mDo (textFieldCursorDelete >=> Cursor.dullDelete)
-  Vty.KChar c -> continue . fromMaybe tc $ textFieldCursorInsertChar c $ Just tc
-  _      -> continue tc
-  where
-    mDo f = continue . fromMaybe tc $ f tc
-handleEvent tc _ = continue tc
+handleEvent tz _ = continue tz
 
 main :: IO ()
-main = do
-  path : _ <- getArgs
+main = getArgs >>= \case
+  path : _ -> editFile path
+  []       -> editBuffer
+
+editFile :: FilePath -> IO ()
+editFile path = do
   contents <- Text.strip <$> Text.readFile path
-  Brick.defaultMain app (makeTextFieldCursor contents)
-    >>= Text.writeFile path . (<>"\n") . Text.strip . rebuildTextFieldCursor
+  assemble <$> Brick.defaultMain app (expose contents)
+    >>= maybe (fail "invalid text???") (Text.writeFile path)
+
+editBuffer :: IO ()
+editBuffer = do
+  assemble <$> Brick.defaultMain app blank
+    >>= maybe (fail "invalid text???") (Text.putStrLn)
