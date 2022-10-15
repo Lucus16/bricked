@@ -1,5 +1,6 @@
 {-# LANGUAGE BlockArguments #-}
 {-# LANGUAGE DerivingVia #-}
+{-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
@@ -7,6 +8,7 @@
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE StandaloneDeriving #-}
+{-# LANGUAGE TupleSections #-}
 {-# LANGUAGE TypeFamilies #-}
 
 module Main where
@@ -17,11 +19,11 @@ import Cursor.Text
 import Cursor.TextField
 import Cursor.Types qualified as Cursor
 import Data.ByteString (ByteString)
-import Data.Maybe (fromMaybe)
+import Data.Maybe (fromMaybe, maybeToList)
 import Data.Text (Text)
 import Data.Text qualified as Text
 import Data.Text.IO qualified as Text
-import Data.Text.Zipper (TextZipper, deleteChar, deletePrevChar, gotoBOL, gotoEOL, insertChar, moveDown, moveLeft, moveRight, moveUp, stringZipper, textZipper)
+import Data.Text.Zipper (TextZipper, stringZipper, textZipper)
 import Data.Text.Zipper qualified as TextZipper
 import Data.Time.Clock (UTCTime)
 import Data.Tuple (swap)
@@ -30,8 +32,10 @@ import System.Directory ()
 import System.Environment (getArgs)
 import System.Exit ()
 import Text.Read (readMaybe)
+import Data.List.Zipper qualified as Zipper
+import Data.List.Zipper (Zipper)
 
-import Brick (App(..), Location(..), Widget, continue, halt)
+import Brick (App(..), Location(..), continue, halt, vBox)
 import Brick qualified as Brick
 import Brick.Main qualified as Brick
 import Brick.Widgets.Border qualified as Brick
@@ -40,6 +44,8 @@ import Brick.Widgets.Core qualified as Brick
 
 import Graphics.Vty.Attributes qualified as Vty
 import Graphics.Vty.Input.Events qualified as Vty
+
+type Widget = Brick.Widget Text
 
 newtype Password = Password ByteString
 
@@ -66,120 +72,148 @@ class Editable a where
   suggest = const []
   assemble :: Exposed a -> Maybe a
   handleKey :: [Vty.Modifier] -> Vty.Key -> Exposed a -> Maybe (Exposed a)
+  drawExposed :: Exposed a -> Widget
+  drawAssembled :: a -> Widget
+
+drawLine :: Zipper Char -> Widget
+drawLine = Brick.showCursor "cursor" . Location . (,0) . length . Zipper.before
+  <*> Brick.strWrap . Zipper.toList
 
 instance Editable Text where
   newtype Exposed Text = ExposedText { unExposedText :: TextZipper Text }
   blank = expose ("" :: Text)
-  expose t = ExposedText $ textZipper [t] Nothing
+  expose t = ExposedText $ textZipper (Text.lines t) Nothing
   suggest = const []
-  assemble = Just . Text.concat . TextZipper.getText . unExposedText
+  assemble = Just . Text.unlines . TextZipper.getText . unExposedText
+  handleKey mods key = fmap ExposedText . handleKeyForTextZipper mods key . unExposedText
+  drawExposed = Brick.showCursor "cursor" . Location . swap . TextZipper.cursorPosition . unExposedText
+    <*> Brick.txtWrap . Text.unlines . TextZipper.getText . unExposedText
+  drawAssembled = Brick.txtWrap
 
-  handleKey []          (Vty.KChar c)   = Just . ExposedText . insertChar c . unExposedText
-  handleKey [Vty.MCtrl] (Vty.KChar 'a') = Just . ExposedText . gotoBOL . unExposedText
-  handleKey [Vty.MCtrl] (Vty.KChar 'e') = Just . ExposedText . gotoEOL . unExposedText
+handleKeyForTextZipper :: (Eq a, Monoid a) => [Vty.Modifier] -> Vty.Key -> TextZipper a -> Maybe (TextZipper a)
+handleKeyForTextZipper []          (Vty.KChar c)   = Just . TextZipper.insertChar c
+handleKeyForTextZipper [Vty.MCtrl] (Vty.KChar 'a') = Just . TextZipper.gotoBOL
+handleKeyForTextZipper [Vty.MCtrl] (Vty.KChar 'e') = Just . TextZipper.gotoEOL
 
-  handleKey [] Vty.KLeft  = Just . ExposedText . TextZipper.moveLeft . unExposedText
-  handleKey [] Vty.KRight = Just . ExposedText . TextZipper.moveRight . unExposedText
-  handleKey [] Vty.KUp    = Just . ExposedText . TextZipper.moveUp . unExposedText
-  handleKey [] Vty.KDown  = Just . ExposedText . TextZipper.moveDown . unExposedText
-  handleKey [] Vty.KHome  = Just . ExposedText . TextZipper.gotoBOL . unExposedText
-  handleKey [] Vty.KEnd   = Just . ExposedText . TextZipper.gotoEOL . unExposedText
-  handleKey [] Vty.KBS    = Just . ExposedText . TextZipper.deletePrevChar . unExposedText
-  handleKey [] Vty.KDel   = Just . ExposedText . TextZipper.deleteChar . unExposedText
-  handleKey [] Vty.KEnter = Just . ExposedText . TextZipper.breakLine . unExposedText
-  handleKey _ _           = const Nothing
+handleKeyForTextZipper [] Vty.KBS    = Just . TextZipper.deletePrevChar
+handleKeyForTextZipper [] Vty.KDel   = Just . TextZipper.deleteChar
+handleKeyForTextZipper [] Vty.KDown  = Just . TextZipper.moveDown
+handleKeyForTextZipper [] Vty.KEnd   = Just . TextZipper.gotoEOL
+handleKeyForTextZipper [] Vty.KEnter = Just . TextZipper.breakLine
+handleKeyForTextZipper [] Vty.KHome  = Just . TextZipper.gotoBOL
+handleKeyForTextZipper [] Vty.KLeft  = Just . TextZipper.moveLeft
+handleKeyForTextZipper [] Vty.KRight = Just . TextZipper.moveRight
+handleKeyForTextZipper [] Vty.KUp    = Just . TextZipper.moveUp
+handleKeyForTextZipper _ _           = const Nothing
 
-  --Vty.KLeft   -> mDo textFieldCursorSelectPrevChar
-  --Vty.KRight  -> mDo textFieldCursorSelectNextChar
-  --Vty.KUp     -> mDo textFieldCursorSelectPrevLine
-  --Vty.KDown   -> mDo textFieldCursorSelectNextLine
-  --Vty.KBS     -> mDo (textFieldCursorRemove >=> Cursor.dullDelete)
-  --Vty.KDel    -> mDo (textFieldCursorDelete >=> Cursor.dullDelete)
-  --Vty.KChar c -> continue . fromMaybe tc $ textFieldCursorInsertChar c $ Just tc
+handleKeyForLine :: [Vty.Modifier] -> Vty.Key -> Zipper Char -> Maybe (Zipper Char)
+handleKeyForLine []          (Vty.KChar c)   = Just . Zipper.insert c
+handleKeyForLine [Vty.MCtrl] (Vty.KChar 'a') = Zipper.toStart
+handleKeyForLine [Vty.MCtrl] (Vty.KChar 'e') = Zipper.toEnd
 
-class Drawable a where
-  draw :: a -> [Widget Text]
+handleKeyForLine [] Vty.KLeft  = Zipper.toPrev
+handleKeyForLine [] Vty.KRight = Zipper.toNext
+handleKeyForLine [] Vty.KHome  = Zipper.toStart
+handleKeyForLine [] Vty.KEnd   = Zipper.toEnd
+handleKeyForLine [] Vty.KBS    = Zipper.toPrev >=> Zipper.delete
+handleKeyForLine [] Vty.KDel   = Zipper.delete
+handleKeyForLine _ _           = const Nothing
 
-instance Drawable (TextZipper Text) where
-  draw tz = pure
-    $ Brick.showCursor "cursor" (Location $ swap $ TextZipper.cursorPosition tz)
-    $ Brick.txtWrap (Text.concat $ map (<>"\n") $ TextZipper.getText tz)
+dropCursor :: Widget -> Widget
+dropCursor p = Brick.Widget (Brick.hSize p) (Brick.vSize p) $ updateResult <$> (Brick.render p)
+  where
+    updateResult result = result { Brick.cursors = drop 1 (Brick.cursors result) }
 
-instance Drawable (Exposed Text) where
-  draw = draw . unExposedText
+exposeShow :: Show a => a -> Zipper Char
+exposeShow = Zipper.fromList . show
 
-exposeShow :: Show a => a -> TextZipper String
-exposeShow i = stringZipper [show i] (Just 1)
-
-assembleRead :: Read a => TextZipper String -> Maybe a
-assembleRead = readMaybe . concat . TextZipper.getText
+assembleRead :: Read a => Zipper Char -> Maybe a
+assembleRead = readMaybe . Zipper.toList
 
 newtype ReadShowEditable a = ReadShowEditable a
   deriving newtype (Read, Show)
 
 instance (Read a, Show a) => Editable (ReadShowEditable a) where
-  newtype Exposed (ReadShowEditable a) = ExposedByReadShow { unExposedByReadShow :: TextZipper String }
-  blank = ExposedByReadShow $ stringZipper [""] (Just 1)
-  expose i = ExposedByReadShow $ stringZipper [show i] (Just 1)
+  newtype Exposed (ReadShowEditable a) = ExposedByReadShow { unExposedByReadShow :: Zipper Char }
+  blank = ExposedByReadShow Zipper.empty
+  expose = ExposedByReadShow . Zipper.fromList . show
   suggest = const []
-  assemble = readMaybe . concat . TextZipper.getText . unExposedByReadShow
-
-  handleKey []          (Vty.KChar c)   = Just . ExposedByReadShow . insertChar c . unExposedByReadShow
-  handleKey [Vty.MCtrl] (Vty.KChar 'a') = Just . ExposedByReadShow . gotoBOL . unExposedByReadShow
-  handleKey [Vty.MCtrl] (Vty.KChar 'e') = Just . ExposedByReadShow . gotoEOL . unExposedByReadShow
-
-  handleKey [] Vty.KLeft  = Just . ExposedByReadShow . moveLeft . unExposedByReadShow
-  handleKey [] Vty.KRight = Just . ExposedByReadShow . moveRight . unExposedByReadShow
-  handleKey [] Vty.KUp    = Just . ExposedByReadShow . moveUp . unExposedByReadShow
-  handleKey [] Vty.KDown  = Just . ExposedByReadShow . moveDown . unExposedByReadShow
-  handleKey [] Vty.KBS    = Just . ExposedByReadShow . deletePrevChar . unExposedByReadShow
-  handleKey [] Vty.KDel   = Just . ExposedByReadShow . deleteChar . unExposedByReadShow
-  handleKey _ _           = const Nothing
+  assemble = readMaybe . Zipper.toList . unExposedByReadShow
+  handleKey mods key = fmap ExposedByReadShow . handleKeyForLine mods key . unExposedByReadShow
+  drawExposed = drawLine . unExposedByReadShow
+  drawAssembled = Brick.strWrap . show
 
 --deriving via (ReadShowEditable Int) instance Editable Int
 
 instance Editable Int where
-  newtype Exposed Int = ExposedInt { unExposedInt :: TextZipper String }
+  newtype Exposed Int = ExposedInt { unExposedInt :: Zipper Char }
   blank = expose (0 :: Int)
   expose = ExposedInt . exposeShow
   assemble = assembleRead . unExposedInt
-
-  handleKey [] Vty.KLeft     = Just . ExposedInt . moveLeft . unExposedInt
-  handleKey [] Vty.KRight    = Just . ExposedInt . moveRight . unExposedInt
-  handleKey [] Vty.KBS       = Just . ExposedInt . deletePrevChar . unExposedInt
-  handleKey [] Vty.KDel      = Just . ExposedInt . deleteChar . unExposedInt
-  handleKey [] (Vty.KChar c) = Just . ExposedInt . insertChar c . unExposedInt
-  handleKey _ _              = const Nothing
+  handleKey mods key = fmap ExposedInt . handleKeyForLine mods key . unExposedInt
+  drawExposed = drawLine . unExposedInt
+  drawAssembled = Brick.strWrap . show
 
 instance Editable Word64 where
-  newtype Exposed Word64 = ExposedWord64 { unExposedWord64 :: TextZipper String }
+  newtype Exposed Word64 = ExposedWord64 { unExposedWord64 :: Zipper Char }
   blank = expose (0 :: Word64)
   expose = ExposedWord64 . exposeShow
   assemble = assembleRead . unExposedWord64
+  handleKey mods key = fmap ExposedWord64 . handleKeyForLine mods key . unExposedWord64
+  drawExposed = drawLine . unExposedWord64
+  drawAssembled = Brick.strWrap . show
 
 data Role
   = User
   | Admin
-  deriving (Read, Show)
+  deriving (Bounded, Enum, Read, Show)
 
 instance Editable Role where
-  newtype Exposed Role = ExposedRole { unExposedRole :: TextZipper String }
-  blank = ExposedRole $ stringZipper [] Nothing
+  newtype Exposed Role = ExposedRole { unExposedRole :: Zipper Char }
+  blank = ExposedRole Zipper.empty
   expose = ExposedRole . exposeShow
-  suggest = const $ map expose [Admin, User]
+  suggest _ = map expose [minBound..maxBound]
   assemble = assembleRead . unExposedRole
+  handleKey mods key = fmap ExposedRole . handleKeyForLine mods key . unExposedRole
+  drawExposed = drawLine . unExposedRole
+  drawAssembled = Brick.strWrap . show
 
 instance Editable a => Editable [a] where
-  newtype Exposed [a] = ExposedList { unExposedList :: ListCursor (Node a) }
-  blank = ExposedList emptyListCursor
-  expose = ExposedList . makeListCursor . map Complete
-  assemble = traverse assembleNode . rebuildListCursor . unExposedList
+  newtype Exposed [a] = ExposedList { unExposedList :: Zipper (Node a) }
+  blank = ExposedList Zipper.empty
+  expose = ExposedList . Zipper.fromList . map Complete
+  assemble = traverse assembleNode . Zipper.toList . unExposedList
+
+  handleKey mods key = fmap ExposedList . handle . unExposedList
+    where
+      handle xs = case Zipper.pop xs of
+        Just (Exposed x, xs') -> case handleKey mods key x of
+          Just x' -> Just $ Zipper.insert (Exposed x') xs'
+          Nothing -> handleAsList mods key xs
+        Just (Complete x, xs') -> handleAsList mods key xs
+        Nothing -> handleAsList mods key xs
+
+      handleAsList [] Vty.KUp = Zipper.toPrev
+      handleAsList [] Vty.KDown = Zipper.toNext
+      handleAsList _ _ = const Nothing
+
+  drawExposed (ExposedList xs) = vBox $ case Zipper.current xs of
+    Nothing  -> before ++ after
+    Just cur -> before ++ drawNode cur : after
+    where
+      before = dropCursor . drawNode <$> Zipper.before xs
+      after = dropCursor . drawNode <$> Zipper.after xs
+      drawNode = drawExposed . unpack
+  drawAssembled = vBox . map drawAssembled
 
 instance Editable UTCTime where
-  newtype Exposed UTCTime = ExposedUTCTime { unExposedUTCTime :: TextZipper String }
-  blank = ExposedUTCTime $ stringZipper [] Nothing
+  newtype Exposed UTCTime = ExposedUTCTime { unExposedUTCTime :: Zipper Char }
+  blank = ExposedUTCTime Zipper.empty
   expose = ExposedUTCTime . exposeShow
   assemble = assembleRead . unExposedUTCTime
+  handleKey mods key = fmap ExposedUTCTime . handleKeyForLine mods key . unExposedUTCTime
+  drawExposed = drawLine . unExposedUTCTime
+  drawAssembled = Brick.strWrap . show
 
 data Node a
   = Exposed !(Exposed a)
@@ -188,6 +222,14 @@ data Node a
 pack :: Editable a => Exposed a -> Node a
 pack x = maybe (Exposed x) Complete $ assemble x
 
+deselectNode :: Editable a => Node a -> Node a
+deselectNode x@(Complete _) = x
+deselectNode x@(Exposed ex) = maybe x Complete $ assemble ex
+
+selectNode :: Editable a => Node a -> Node a
+selectNode x@(Exposed _) = x
+selectNode (Complete x) = Exposed $ expose x
+
 unpack :: Editable a => Node a -> Exposed a
 unpack (Exposed x) = x
 unpack (Complete x) = expose x
@@ -195,6 +237,10 @@ unpack (Complete x) = expose x
 assembleNode :: Editable a => Node a -> Maybe a
 assembleNode (Exposed x) = assemble x
 assembleNode (Complete x) = Just x
+
+drawNode :: Editable a => Node a -> Widget
+drawNode (Exposed x) = drawExposed x
+drawNode (Complete x) = drawAssembled x
 
 -- Resolves to a
 data EditingBefore a
@@ -303,16 +349,16 @@ data EditingShowRead a = (Show a, Read a) => EditingShowRead Text
 --  | EditingRecord
 --  | Complete a
 
-app :: Brick.App (Exposed Text) e Text
+app :: (Editable a) => Brick.App (Exposed a) e Text
 app = Brick.App
-  { appDraw = draw
+  { appDraw = pure . drawExposed
   , appChooseCursor = Brick.showFirstCursor
   , appHandleEvent = handleEvent
   , appStartEvent = pure
   , appAttrMap = const $ Brick.attrMap Vty.defAttr []
   }
 
-handleEvent :: Exposed Text -> Brick.BrickEvent Text e -> Brick.EventM Text (Brick.Next (Exposed Text))
+handleEvent :: (Editable a) => Exposed a -> Brick.BrickEvent Text e -> Brick.EventM Text (Brick.Next (Exposed a))
 handleEvent tz (Brick.VtyEvent (Vty.EvKey Vty.KEsc mods)) = halt tz
 handleEvent tz (Brick.VtyEvent (Vty.EvKey key mods)) =
   continue $ fromMaybe tz $ handleKey mods key tz
@@ -331,6 +377,4 @@ editFile path = do
     >>= maybe (fail "invalid text???") (Text.writeFile path)
 
 editBuffer :: IO ()
-editBuffer = do
-  assemble <$> Brick.defaultMain app blank
-    >>= maybe (fail "invalid text???") (Text.putStrLn)
+editBuffer = void $ Brick.defaultMain app (expose [[1..5], [10..12]] :: Exposed [[Int]])
