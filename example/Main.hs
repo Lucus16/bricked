@@ -35,7 +35,7 @@ import Text.Read (readMaybe)
 import Data.List.Zipper qualified as Zipper
 import Data.List.Zipper (Zipper)
 
-import Brick (App(..), Location(..), continue, halt, vBox)
+import Brick ((<+>), App(..), Location(..), continue, halt, vBox)
 import Brick qualified as Brick
 import Brick.Main qualified as Brick
 import Brick.Widgets.Border qualified as Brick
@@ -179,32 +179,27 @@ instance Editable Role where
   drawAssembled = Brick.strWrap . show
 
 instance Editable a => Editable [a] where
-  newtype Exposed [a] = ExposedList { unExposedList :: Zipper (Node a) }
-  blank = ExposedList Zipper.empty
-  expose = ExposedList . Zipper.fromList . map Complete
-  assemble = traverse assembleNode . Zipper.toList . unExposedList
+  data Exposed [a] = ELEmpty | ELZip ![Node a] (Exposed a) ![Node a]
+  blank = ELEmpty
+  expose [] = ELEmpty
+  expose (x:xs) = ELZip [] (expose x) (map Complete xs)
+  assemble ELEmpty = Just []
+  assemble (ELZip ls x rs) = traverse assembleNode $ reverse ls ++ [Exposed x] ++ rs
 
-  handleKey mods key = fmap ExposedList . handle . unExposedList
+  handleKey _ _ ELEmpty = Nothing -- TODO: Allow node creation
+  handleKey mods key (ELZip before cur after) = case handleKey mods key cur of
+    Just cur' -> Just $ ELZip before cur' after
+    Nothing   -> handleAsList mods key before cur after
     where
-      handle xs = case Zipper.pop xs of
-        Just (Exposed x, xs') -> case handleKey mods key x of
-          Just x' -> Just $ Zipper.insert (Exposed x') xs'
-          Nothing -> handleAsList mods key xs
-        Just (Complete x, xs') -> handleAsList mods key xs
-        Nothing -> handleAsList mods key xs
+      handleAsList [] Vty.KUp (l:ls) x rs = Just $ ELZip ls (unpack l) (pack x:rs)
+      handleAsList [] Vty.KDown ls x (r:rs) = Just $ ELZip (pack x:ls) (unpack r) rs
+      handleAsList _ _ _ _ _ = Nothing
 
-      handleAsList [] Vty.KUp = Zipper.toPrev
-      handleAsList [] Vty.KDown = Zipper.toNext
-      handleAsList _ _ = const Nothing
+  drawExposed ELEmpty = Brick.strWrap "empty list"
+  drawExposed (ELZip before cur after) = vBox $ map (Brick.str "- " <+>) $
+    map drawNode (reverse before) ++ drawExposed cur : map drawNode after
 
-  drawExposed (ExposedList xs) = vBox $ case Zipper.current xs of
-    Nothing  -> before ++ after
-    Just cur -> before ++ drawNode cur : after
-    where
-      before = dropCursor . drawNode <$> Zipper.before xs
-      after = dropCursor . drawNode <$> Zipper.after xs
-      drawNode = drawExposed . unpack
-  drawAssembled = vBox . map drawAssembled
+  drawAssembled = vBox . map ((Brick.str "- " <+>) . drawAssembled)
 
 instance Editable UTCTime where
   newtype Exposed UTCTime = ExposedUTCTime { unExposedUTCTime :: Zipper Char }
@@ -239,7 +234,7 @@ assembleNode (Exposed x) = assemble x
 assembleNode (Complete x) = Just x
 
 drawNode :: Editable a => Node a -> Widget
-drawNode (Exposed x) = drawExposed x
+drawNode (Exposed x) = dropCursor $ drawExposed x
 drawNode (Complete x) = drawAssembled x
 
 -- Resolves to a
@@ -359,7 +354,8 @@ app = Brick.App
   }
 
 handleEvent :: (Editable a) => Exposed a -> Brick.BrickEvent Text e -> Brick.EventM Text (Brick.Next (Exposed a))
-handleEvent tz (Brick.VtyEvent (Vty.EvKey Vty.KEsc mods)) = halt tz
+handleEvent tz (Brick.VtyEvent (Vty.EvKey (Vty.KChar 'q') [Vty.MCtrl])) = halt tz
+handleEvent tz (Brick.VtyEvent (Vty.EvKey (Vty.KChar 'c') [Vty.MCtrl])) = halt tz
 handleEvent tz (Brick.VtyEvent (Vty.EvKey key mods)) =
   continue $ fromMaybe tz $ handleKey mods key tz
 
