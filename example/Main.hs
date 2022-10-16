@@ -166,7 +166,9 @@ instance Editable Word64 where
   expose = ExposedWord64 . exposeShow
   assemble = assembleRead . unExposedWord64
   handleKey mods key = fmap ExposedWord64 . handleKeyForLine mods key . unExposedWord64
-  drawExposed focus = drawLine focus . unExposedWord64
+  drawExposed focus i = case assemble i of
+    Nothing -> invalidIf (not focus) $ drawLine focus $ unExposedWord64 i
+    Just _  -> drawLine focus $ unExposedWord64 i
   drawAssembled = Brick.str . show
 
 data Role
@@ -184,6 +186,12 @@ instance Editable Role where
   drawExposed focus = drawLine focus . unExposedRole
   drawAssembled = Brick.str . show
 
+deleteEL :: Editable a => Exposed [a] -> Maybe (Exposed [a])
+deleteEL (ELZip False ls x (r:rs)) = Just $ ELZip False ls (unpack r) rs
+deleteEL (ELZip False (l:ls) x []) = Just $ ELZip False ls (unpack l) []
+deleteEL (ELZip False [] x [])     = Just $ ELEmpty
+deleteEL ELEmpty                   = Nothing
+
 instance Editable a => Editable [a] where
   data Exposed [a] = ELEmpty | ELZip !Bool ![Node a] !(Exposed a) ![Node a]
   blank = ELEmpty
@@ -194,6 +202,7 @@ instance Editable a => Editable [a] where
 
   handleKey [] (Vty.KChar 'o') ELEmpty = Just $ ELZip True [] blank []
   handleKey [] (Vty.KChar 'O') ELEmpty = Just $ ELZip True [] blank []
+  handleKey [] (Vty.KChar 'd') el@(ELZip False _ _ _) = deleteEL el
   handleKey _ _ ELEmpty = Nothing -- TODO: Allow node creation
   handleKey mods key (ELZip inChild before cur after) = case handleKey mods key cur of
     Just cur' | inChild -> Just $ ELZip True before cur' after
@@ -203,12 +212,6 @@ instance Editable a => Editable [a] where
         = Just $ ELZip False ls (unpack l) (pack x:rs)
       handleAsList [] Vty.KDown ls x (r:rs)
         = Just $ ELZip False (pack x:ls) (unpack r) rs
-      handleAsList [] (Vty.KChar 'd') ls x (r:rs)
-        | not inChild = Just $ ELZip False ls (unpack r) rs
-      handleAsList [] (Vty.KChar 'd') (l:ls) x []
-        | not inChild = Just $ ELZip False ls (unpack l) []
-      handleAsList [] (Vty.KChar 'd') [] x []
-        | not inChild = Just $ ELEmpty
       handleAsList [] (Vty.KChar 'o') ls x rs
         | not inChild = Just $ ELZip True (pack x:ls) blank rs
       handleAsList [] (Vty.KChar 'O') ls x rs
