@@ -151,11 +151,10 @@ instance (Read a, Show a) => Editable (ReadShowEditable a) where
 
 instance Editable Int where
   newtype Exposed Int = ExposedInt { unExposedInt :: Zipper Char }
-  blank = expose (0 :: Int)
+  blank = ExposedInt Zipper.empty
   expose = ExposedInt . exposeShow
   assemble = assembleRead . unExposedInt
   handleKey mods key = fmap ExposedInt . handleKeyForLine mods key . unExposedInt
-  --drawExposed focus = invalidIf (not focus) . drawLine focus . unExposedInt
   drawExposed focus i = case assemble i of
     Nothing -> invalidIf (not focus) $ drawLine focus $ unExposedInt i
     Just _  -> drawLine focus $ unExposedInt i
@@ -163,7 +162,7 @@ instance Editable Int where
 
 instance Editable Word64 where
   newtype Exposed Word64 = ExposedWord64 { unExposedWord64 :: Zipper Char }
-  blank = expose (0 :: Word64)
+  blank = ExposedWord64 Zipper.empty
   expose = ExposedWord64 . exposeShow
   assemble = assembleRead . unExposedWord64
   handleKey mods key = fmap ExposedWord64 . handleKeyForLine mods key . unExposedWord64
@@ -193,7 +192,8 @@ instance Editable a => Editable [a] where
   assemble ELEmpty = Just []
   assemble (ELZip _ ls x rs) = traverse assembleNode $ reverse ls ++ [Exposed x] ++ rs
 
-  handleKey [] Vty.KEnter ELEmpty = Just $ ELZip True [] blank []
+  handleKey [] (Vty.KChar 'o') ELEmpty = Just $ ELZip True [] blank []
+  handleKey [] (Vty.KChar 'O') ELEmpty = Just $ ELZip True [] blank []
   handleKey _ _ ELEmpty = Nothing -- TODO: Allow node creation
   handleKey mods key (ELZip inChild before cur after) = case handleKey mods key cur of
     Just cur' | inChild -> Just $ ELZip True before cur' after
@@ -203,6 +203,17 @@ instance Editable a => Editable [a] where
         = Just $ ELZip False ls (unpack l) (pack x:rs)
       handleAsList [] Vty.KDown ls x (r:rs)
         = Just $ ELZip False (pack x:ls) (unpack r) rs
+      handleAsList [] (Vty.KChar 'd') ls x (r:rs)
+        | not inChild = Just $ ELZip False ls (unpack r) rs
+      handleAsList [] (Vty.KChar 'd') (l:ls) x []
+        | not inChild = Just $ ELZip False ls (unpack l) []
+      handleAsList [] (Vty.KChar 'd') [] x []
+        | not inChild = Just $ ELEmpty
+      handleAsList [] (Vty.KChar 'o') ls x rs
+        | not inChild = Just $ ELZip True (pack x:ls) blank rs
+      handleAsList [] (Vty.KChar 'O') ls x rs
+        | not inChild = Just $ ELZip True ls blank (pack x:rs)
+
       handleAsList [] Vty.KEsc   ls x rs |     inChild = Just $ ELZip False ls x rs
       handleAsList [] Vty.KEnter ls x rs | not inChild = Just $ ELZip True  ls x rs
       handleAsList [] Vty.KLeft  ls x rs |     inChild = Just $ ELZip False ls x rs
@@ -214,6 +225,7 @@ instance Editable a => Editable [a] where
     = vBox $ map (Brick.str "- " <+>)
     $ map drawNode (reverse before) ++ drawCur : map drawNode after
     where drawCur = focussedIf (focus && not childFocus)
+                  $ Brick.padRight Brick.Max
                   $ drawExposed (focus && childFocus) cur
 
   drawAssembled = vBox . map ((Brick.str "- " <+>) . drawAssembled)
