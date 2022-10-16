@@ -72,11 +72,15 @@ class Editable a where
   suggest = const []
   assemble :: Exposed a -> Maybe a
   handleKey :: [Vty.Modifier] -> Vty.Key -> Exposed a -> Maybe (Exposed a)
-  drawExposed :: Exposed a -> Widget
+  drawExposed :: Bool -> Exposed a -> Widget
   drawAssembled :: a -> Widget
 
-drawLine :: Zipper Char -> Widget
-drawLine = Brick.showCursor "cursor" . Location . (,0) . length . Zipper.before
+showCursorIf :: Bool -> (Int, Int) -> Widget -> Widget
+showCursorIf False = const id
+showCursorIf True  = Brick.showCursor "cursor" . Location . swap
+
+drawLine :: Bool -> Zipper Char -> Widget
+drawLine focus = showCursorIf focus . (0,) . length . Zipper.before
   <*> Brick.str . Zipper.toList
 
 instance Editable Text where
@@ -86,7 +90,7 @@ instance Editable Text where
   suggest = const []
   assemble = Just . Text.unlines . TextZipper.getText . unExposedText
   handleKey mods key = fmap ExposedText . handleKeyForTextZipper mods key . unExposedText
-  drawExposed = Brick.showCursor "cursor" . Location . swap . TextZipper.cursorPosition . unExposedText
+  drawExposed focus = showCursorIf focus . TextZipper.cursorPosition . unExposedText
     <*> Brick.txtWrap . Text.unlines . TextZipper.getText . unExposedText
   drawAssembled = Brick.txtWrap
 
@@ -140,8 +144,8 @@ instance (Read a, Show a) => Editable (ReadShowEditable a) where
   suggest = const []
   assemble = readMaybe . Zipper.toList . unExposedByReadShow
   handleKey mods key = fmap ExposedByReadShow . handleKeyForLine mods key . unExposedByReadShow
-  drawExposed = drawLine . unExposedByReadShow
-  drawAssembled = Brick.strWrap . show
+  drawExposed focus = drawLine focus . unExposedByReadShow
+  drawAssembled = Brick.str . show
 
 --deriving via (ReadShowEditable Int) instance Editable Int
 
@@ -151,7 +155,10 @@ instance Editable Int where
   expose = ExposedInt . exposeShow
   assemble = assembleRead . unExposedInt
   handleKey mods key = fmap ExposedInt . handleKeyForLine mods key . unExposedInt
-  drawExposed = drawLine . unExposedInt
+  --drawExposed focus = invalidIf (not focus) . drawLine focus . unExposedInt
+  drawExposed focus i = case assemble i of
+    Nothing -> invalidIf (not focus) $ drawLine focus $ unExposedInt i
+    Just _  -> drawLine focus $ unExposedInt i
   drawAssembled = Brick.str . show
 
 instance Editable Word64 where
@@ -160,8 +167,8 @@ instance Editable Word64 where
   expose = ExposedWord64 . exposeShow
   assemble = assembleRead . unExposedWord64
   handleKey mods key = fmap ExposedWord64 . handleKeyForLine mods key . unExposedWord64
-  drawExposed = drawLine . unExposedWord64
-  drawAssembled = Brick.strWrap . show
+  drawExposed focus = drawLine focus . unExposedWord64
+  drawAssembled = Brick.str . show
 
 data Role
   = User
@@ -175,31 +182,68 @@ instance Editable Role where
   suggest _ = map expose [minBound..maxBound]
   assemble = assembleRead . unExposedRole
   handleKey mods key = fmap ExposedRole . handleKeyForLine mods key . unExposedRole
-  drawExposed = drawLine . unExposedRole
-  drawAssembled = Brick.strWrap . show
+  drawExposed focus = drawLine focus . unExposedRole
+  drawAssembled = Brick.str . show
 
 instance Editable a => Editable [a] where
-  data Exposed [a] = ELEmpty | ELZip ![Node a] (Exposed a) ![Node a]
+  data Exposed [a] = ELEmpty | ELZip !Bool ![Node a] !(Exposed a) ![Node a]
   blank = ELEmpty
   expose [] = ELEmpty
-  expose (x:xs) = ELZip [] (expose x) (map Complete xs)
+  expose (x:xs) = ELZip False [] (expose x) (map Complete xs)
   assemble ELEmpty = Just []
-  assemble (ELZip ls x rs) = traverse assembleNode $ reverse ls ++ [Exposed x] ++ rs
+  assemble (ELZip _ ls x rs) = traverse assembleNode $ reverse ls ++ [Exposed x] ++ rs
 
+  handleKey [] Vty.KEnter ELEmpty = Just $ ELZip True [] blank []
   handleKey _ _ ELEmpty = Nothing -- TODO: Allow node creation
-  handleKey mods key (ELZip before cur after) = case handleKey mods key cur of
-    Just cur' -> Just $ ELZip before cur' after
-    Nothing   -> handleAsList mods key before cur after
+  handleKey mods key (ELZip inChild before cur after) = case handleKey mods key cur of
+    Just cur' | inChild -> Just $ ELZip True before cur' after
+    _                   -> handleAsList mods key before cur after
     where
-      handleAsList [] Vty.KUp (l:ls) x rs = Just $ ELZip ls (unpack l) (pack x:rs)
-      handleAsList [] Vty.KDown ls x (r:rs) = Just $ ELZip (pack x:ls) (unpack r) rs
+      handleAsList [] Vty.KUp (l:ls) x rs
+        = Just $ ELZip False ls (unpack l) (pack x:rs)
+      handleAsList [] Vty.KDown ls x (r:rs)
+        = Just $ ELZip False (pack x:ls) (unpack r) rs
+      handleAsList [] Vty.KEsc   ls x rs |     inChild = Just $ ELZip False ls x rs
+      handleAsList [] Vty.KEnter ls x rs | not inChild = Just $ ELZip True  ls x rs
+      handleAsList [] Vty.KLeft  ls x rs |     inChild = Just $ ELZip False ls x rs
+      handleAsList [] Vty.KRight ls x rs | not inChild = Just $ ELZip True  ls x rs
       handleAsList _ _ _ _ _ = Nothing
 
-  drawExposed ELEmpty = Brick.strWrap "empty list"
-  drawExposed (ELZip before cur after) = vBox $ map (Brick.str "- " <+>) $
-    map drawNode (reverse before) ++ drawExposed cur : map drawNode after
+  drawExposed focus ELEmpty = focussedIf focus $ Brick.str "empty list"
+  drawExposed focus (ELZip childFocus before cur after)
+    = vBox $ map (Brick.str "- " <+>)
+    $ map drawNode (reverse before) ++ drawCur : map drawNode after
+    where drawCur = focussedIf (focus && not childFocus)
+                  $ drawExposed (focus && childFocus) cur
 
   drawAssembled = vBox . map ((Brick.str "- " <+>) . drawAssembled)
+
+newtype Toplevel a = Toplevel { unToplevel :: a }
+
+unExposedToplevel :: Exposed (Toplevel a) -> Exposed a
+unExposedToplevel (ExposedToplevel _ x) = x
+
+instance Editable a => Editable (Toplevel a) where
+  data Exposed (Toplevel a) = ExposedToplevel !Bool !(Exposed a)
+  blank = ExposedToplevel False blank
+  expose = ExposedToplevel False . expose . unToplevel
+  assemble = fmap Toplevel . assemble . unExposedToplevel
+  drawAssembled = focussed . drawAssembled . unToplevel
+  drawExposed focus (ExposedToplevel childFocus x)
+    = focussedIf (focus && not childFocus)
+    $ drawExposed (focus && childFocus) x
+
+  handleKey mods key (ExposedToplevel childFocus x)
+    | childFocus = case handleKey mods key x of
+        Just x' -> Just $ ExposedToplevel childFocus x'
+        Nothing -> handleToplevel mods key childFocus
+    | otherwise = handleToplevel mods key childFocus
+    where
+      handleToplevel [] Vty.KEsc   True  = Just $ ExposedToplevel False x
+      handleToplevel [] Vty.KEnter False = Just $ ExposedToplevel True x
+      handleToplevel [] Vty.KLeft  True  = Just $ ExposedToplevel False x
+      handleToplevel [] Vty.KRight False = Just $ ExposedToplevel True x
+      handleToplevel _ _ _ = Nothing
 
 instance Editable UTCTime where
   newtype Exposed UTCTime = ExposedUTCTime { unExposedUTCTime :: Zipper Char }
@@ -207,8 +251,8 @@ instance Editable UTCTime where
   expose = ExposedUTCTime . exposeShow
   assemble = assembleRead . unExposedUTCTime
   handleKey mods key = fmap ExposedUTCTime . handleKeyForLine mods key . unExposedUTCTime
-  drawExposed = drawLine . unExposedUTCTime
-  drawAssembled = Brick.strWrap . show
+  drawExposed focus = drawLine focus . unExposedUTCTime
+  drawAssembled = Brick.str . show
 
 data Node a
   = Exposed !(Exposed a)
@@ -234,7 +278,7 @@ assembleNode (Exposed x) = assemble x
 assembleNode (Complete x) = Just x
 
 drawNode :: Editable a => Node a -> Widget
-drawNode (Exposed x) = invalid $ dropCursor $ drawExposed x
+drawNode (Exposed x) = drawExposed False x
 drawNode (Complete x) = drawAssembled x
 
 -- Resolves to a
@@ -347,22 +391,31 @@ data EditingShowRead a = (Show a, Read a) => EditingShowRead Text
 focussed :: Widget -> Widget
 focussed = Brick.withAttr $ Brick.attrName "focussed"
 
+focussedIf :: Bool -> Widget -> Widget
+focussedIf True = focussed
+focussedIf False = id
+
 invalid :: Widget -> Widget
 invalid = Brick.withAttr $ Brick.attrName "invalid"
 
+invalidIf :: Bool -> Widget -> Widget
+invalidIf False = id
+invalidIf True = invalid
+
 attrMap = Brick.attrMap Vty.defAttr
   [ attr "focussed" $ bg Vty.brightBlack
-  , attr "invalid"  $ bg Vty.red . style Vty.underline
+  , attr "invalid"  $ bg Vty.brightRed . fg Vty.black -- . style Vty.underline
   ]
   where
     attr :: String -> (Vty.Attr -> Vty.Attr) -> (Brick.AttrName, Vty.Attr)
     attr name f = (Brick.attrName name, f Vty.currentAttr)
     bg    = flip Vty.withBackColor
+    fg    = flip Vty.withForeColor
     style = flip Vty.withStyle
 
 app :: (Editable a) => Brick.App (Exposed a) e Text
 app = Brick.App
-  { appDraw = pure . drawExposed
+  { appDraw = pure . drawExposed True
   , appChooseCursor = Brick.showFirstCursor
   , appHandleEvent = handleEvent
   , appStartEvent = pure
@@ -385,8 +438,8 @@ main = getArgs >>= \case
 editFile :: FilePath -> IO ()
 editFile path = do
   contents <- Text.strip <$> Text.readFile path
-  assemble <$> Brick.defaultMain app (expose contents)
-    >>= maybe (fail "invalid text???") (Text.writeFile path)
+  assemble <$> Brick.defaultMain app (expose $ Toplevel contents)
+    >>= maybe (fail "invalid text???") (Text.writeFile path . unToplevel)
 
 editBuffer :: IO ()
-editBuffer = void $ Brick.defaultMain app (expose [[1..5], [10..12]] :: Exposed [[Int]])
+editBuffer = void $ Brick.defaultMain app (expose $ Toplevel ([[1..5], [10..12]] :: [[Int]]))
