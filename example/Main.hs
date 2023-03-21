@@ -7,7 +7,6 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE StandaloneDeriving #-}
 {-# LANGUAGE TupleSections #-}
 {-# LANGUAGE TypeFamilies #-}
 
@@ -35,8 +34,8 @@ import Text.Read (readMaybe)
 import Data.List.Zipper qualified as Zipper
 import Data.List.Zipper (Zipper)
 
-import Brick ((<+>), App(..), Location(..), continue, halt, vBox)
-import Brick qualified as Brick
+import Brick ((<+>), App(..), Location(..), halt, vBox)
+import Brick qualified
 import Brick.Main qualified as Brick
 import Brick.Widgets.Border qualified as Brick
 import Brick.Widgets.Center qualified as Brick
@@ -124,7 +123,7 @@ handleKeyForLine [] Vty.KDel   = Zipper.delete
 handleKeyForLine _ _           = const Nothing
 
 dropCursor :: Widget -> Widget
-dropCursor p = Brick.Widget (Brick.hSize p) (Brick.vSize p) $ updateResult <$> (Brick.render p)
+dropCursor p = Brick.Widget (Brick.hSize p) (Brick.vSize p) $ updateResult <$> Brick.render p
   where
     updateResult result = result { Brick.cursors = drop 1 (Brick.cursors result) }
 
@@ -189,7 +188,7 @@ instance Editable Role where
 deleteEL :: Editable a => Exposed [a] -> Maybe (Exposed [a])
 deleteEL (ELZip False ls x (r:rs)) = Just $ ELZip False ls (unpack r) rs
 deleteEL (ELZip False (l:ls) x []) = Just $ ELZip False ls (unpack l) []
-deleteEL (ELZip False [] x [])     = Just $ ELEmpty
+deleteEL (ELZip False [] x [])     = Just   ELEmpty
 deleteEL ELEmpty                   = Nothing
 
 instance Editable a => Editable [a] where
@@ -433,17 +432,17 @@ app = Brick.App
   { appDraw = pure . drawExposed True
   , appChooseCursor = Brick.showFirstCursor
   , appHandleEvent = handleEvent
-  , appStartEvent = pure
+  , appStartEvent = pure ()
   , appAttrMap = const attrMap
   }
 
-handleEvent :: (Editable a) => Exposed a -> Brick.BrickEvent Text e -> Brick.EventM Text (Brick.Next (Exposed a))
-handleEvent tz (Brick.VtyEvent (Vty.EvKey (Vty.KChar 'q') [Vty.MCtrl])) = halt tz
-handleEvent tz (Brick.VtyEvent (Vty.EvKey (Vty.KChar 'c') [Vty.MCtrl])) = halt tz
-handleEvent tz (Brick.VtyEvent (Vty.EvKey key mods)) =
-  continue $ fromMaybe tz $ handleKey mods key tz
+handleEvent :: (Editable a) => Brick.BrickEvent Text e -> Brick.EventM Text (Exposed a) ()
+handleEvent (Brick.VtyEvent (Vty.EvKey (Vty.KChar 'q') [Vty.MCtrl])) = halt
+handleEvent (Brick.VtyEvent (Vty.EvKey (Vty.KChar 'c') [Vty.MCtrl])) = halt
+handleEvent (Brick.VtyEvent (Vty.EvKey key mods)) =
+  Brick.modify $ fromMaybe <*> handleKey mods key
 
-handleEvent tz _ = continue tz
+handleEvent _ = pure ()
 
 main :: IO ()
 main = getArgs >>= \case
@@ -453,8 +452,8 @@ main = getArgs >>= \case
 editFile :: FilePath -> IO ()
 editFile path = do
   contents <- Text.strip <$> Text.readFile path
-  assemble <$> Brick.defaultMain app (expose $ Toplevel contents)
-    >>= maybe (fail "invalid text???") (Text.writeFile path . unToplevel)
+  Brick.defaultMain app (expose $ Toplevel contents)
+    >>= maybe (fail "invalid text???") (Text.writeFile path . unToplevel) . assemble
 
 editBuffer :: IO ()
 editBuffer = void $ Brick.defaultMain app (expose $ Toplevel ([[1..5], [10..12]] :: [[Int]]))
