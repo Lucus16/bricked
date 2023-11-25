@@ -1,4 +1,4 @@
-{ ghcName ? "ghc92", pkgs ? import <nixpkgs> { } }:
+{ ghcName ? null, pkgs ? import <nixpkgs> { } }:
 
 let
   haskellPackages = if (ghcName != null) then

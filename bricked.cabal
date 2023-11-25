@@ -10,9 +10,13 @@ library
   default-language:      Haskell2010
 
   build-depends:
-      base               >= 4.16  && < 4.17
-    , text               >= 1.0   && < 2.0
-    , brick              >= 1     && < 2
+      base
+    , aeson
+    , brick
+    , containers
+    , data-fix
+    , text
+    , vector
 
   default-extensions:
     ImportQualifiedPost
@@ -30,16 +34,16 @@ executable example
     Data.List.Zipper
 
   build-depends:
-      aeson              >= 2.0   && < 3
-    , base               >= 4.16  && < 4.17
-    , brick              >= 1     && < 2
-    , bytestring         >= 0.11  && < 0.12
-    , cursor             >= 0.3   && < 0.4
-    , directory          >= 1.3   && < 1.4
-    , text               >= 1.0   && < 2
-    , text-zipper        >= 0.11  && < 1
-    , time               >= 1.11  && < 1.12
-    , vty                >= 5.33  && < 6
+      aeson
+    , base
+    , brick
+    , bytestring
+    , cursor
+    , directory
+    , text
+    , text-zipper
+    , time
+    , vty
 
   default-extensions:
     ImportQualifiedPost
@@ -52,13 +56,13 @@ executable counter
   default-language:      Haskell2010
 
   build-depends:
-      base               >= 4.16  && < 4.17
-    , brick              >= 1     && < 2
-    , bytestring         >= 0.11  && < 0.12
-    , cursor             >= 0.3   && < 0.4
-    , text               >= 1.0   && < 2
-    , time               >= 1.11  && < 1.12
-    , vty                >= 5.33  && < 6
+      base
+    , brick
+    , bytestring
+    , cursor
+    , text
+    , time
+    , vty
 
   default-extensions:
     ImportQualifiedPost
