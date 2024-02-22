@@ -2,6 +2,7 @@
 
 module Bricked.Expr where
 
+import Control.Arrow (first, (>>>))
 import Control.Monad.State.Strict (evalState, runState, state)
 import Data.Fix (Fix (..), foldFix, hoistFix)
 import Data.Functor ((<&>))
@@ -61,24 +62,27 @@ renderExprF maxWidth = \case
 tshow :: (Show a) => a -> Text
 tshow = Text.pack . show
 
-data Sel f
+data SelF f r
   = Selected (Fix f)
-  | Unselected (Fix f)
-  | PartiallySelected (f (Sel f))
+  | NotSelected (Fix f)
+  | PartiallySelected (f r)
+  deriving (Functor)
+
+type Sel f = Fix (SelF f)
 
 type SelExpr = Sel ExprF
 
 unSel :: (Functor f) => Sel f -> Fix f
-unSel = \case
+unSel = foldFix \case
   Selected x -> x
-  Unselected x -> x
-  PartiallySelected fx -> Fix $ unSel <$> fx
+  NotSelected x -> x
+  PartiallySelected fx -> Fix fx
 
 hoistSel :: (Functor f) => (forall a. f a -> g a) -> Sel f -> Sel g
-hoistSel nt = \case
+hoistSel nt = hoistFix \case
   Selected x -> Selected $ hoistFix nt x
-  Unselected x -> Unselected $ hoistFix nt x
-  PartiallySelected x -> PartiallySelected $ nt $ hoistSel nt <$> x
+  NotSelected x -> NotSelected $ hoistFix nt x
+  PartiallySelected x -> PartiallySelected $ nt x
 
 reverseSel
   :: (Functor t, Functor t')
@@ -86,48 +90,46 @@ reverseSel
   -> (t (Sel t') -> t (Sel t'))
 reverseSel f = fmap (hoistSel getReverse) . getReverse . f . Reverse . fmap (hoistSel Reverse)
 
--- TODO: Make the functions below non-recursive and make a recursion combinator
+select :: (Functor f) => Sel f -> Sel f
+select = Fix . Selected . unSel
+
+deselect :: (Functor f) => Sel f -> Sel f
+deselect = Fix . NotSelected . unSel
 
 data Select = Select | Deselect
 
 genericReselect
-  :: (Traversable t, Traversable t')
-  => Select
-  -> t (Sel t')
+  :: (Traversable t, Functor t')
+  => t (Sel t')
   -> (t (Sel t'), Select)
-genericReselect selFirst =
-  flip runState selFirst . traverse \x -> state \selThis ->
-    case (x, selThis) of
+genericReselect =
+  flip runState Deselect . traverse \x -> state \selThis ->
+    first Fix case (unFix x, selThis) of
       (Selected fx, Select) -> (Selected fx, Select)
-      (Selected fx, Deselect) -> (Unselected fx, Select)
-      (Unselected fx, Select) -> (Selected fx, Deselect)
-      (Unselected fx, Deselect) -> (Unselected fx, Deselect)
+      (Selected fx, Deselect) -> (NotSelected fx, Select)
+      (NotSelected fx, Select) -> (Selected fx, Deselect)
+      (NotSelected fx, Deselect) -> (NotSelected fx, Deselect)
       (PartiallySelected fx, Select) -> (Selected (unSel x), Deselect)
       (PartiallySelected fx, Deselect) -> (PartiallySelected fx, Deselect)
 
-selectNextOrNone :: (Traversable t, Traversable t') => t (Sel t') -> t (Sel t')
-selectNextOrNone = fst . genericReselect Deselect
+selectNextOrNone :: (Traversable t, Functor t') => t (Sel t') -> t (Sel t')
+selectNextOrNone = fst . genericReselect
 
-selectNextOrSame :: (Traversable t, Traversable t') => t (Sel t') -> t (Sel t')
-selectNextOrSame x = case genericReselect Deselect x of
+selectNextOrSame :: (Traversable t, Functor t') => t (Sel t') -> t (Sel t')
+selectNextOrSame x = case genericReselect x of
   (x', Select) -> alsoSelectLast x'
   (x', Deselect) -> x'
 
 alsoSelectFirst :: (Traversable t, Functor f) => t (Sel f) -> t (Sel f)
 alsoSelectFirst =
-  flip evalState Select . traverse \x -> state \selThis ->
-    case (x, selThis) of
-      (Selected fx, Select) -> (Selected fx, Deselect)
-      (Unselected fx, Select) -> (Selected fx, Deselect)
-      (PartiallySelected fx, Select) -> (Selected (unSel x), Deselect)
-      (Selected fx, Deselect) -> (Selected fx, Deselect)
-      (Unselected fx, Deselect) -> (Unselected fx, Deselect)
-      (PartiallySelected fx, Deselect) -> (PartiallySelected fx, Deselect)
+  flip evalState Select . traverse \x -> state \case
+    Select -> (select x, Deselect)
+    Deselect -> (x, Deselect)
 
-selectPrevOrNone :: (Traversable t, Traversable t') => t (Sel t') -> t (Sel t')
+selectPrevOrNone :: (Traversable t, Functor t') => t (Sel t') -> t (Sel t')
 selectPrevOrNone = reverseSel selectNextOrNone
 
-selectPrevOrSame :: (Traversable t, Traversable t') => t (Sel t') -> t (Sel t')
+selectPrevOrSame :: (Traversable t, Functor t') => t (Sel t') -> t (Sel t')
 selectPrevOrSame = reverseSel selectNextOrSame
 
 alsoSelectLast :: (Traversable t, Functor f) => t (Sel f) -> t (Sel f)
