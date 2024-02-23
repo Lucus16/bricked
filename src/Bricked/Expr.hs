@@ -84,11 +84,16 @@ hoistSel nt = hoistFix \case
   NotSelected x -> NotSelected $ hoistFix nt x
   PartiallySelected x -> PartiallySelected $ nt x
 
-reverseSel
-  :: (Functor t, Functor t')
-  => (Reverse t (Sel (Reverse t')) -> Reverse t (Sel (Reverse t')))
-  -> (t (Sel t') -> t (Sel t'))
-reverseSel f = fmap (hoistSel getReverse) . getReverse . f . Reverse . fmap (hoistSel Reverse)
+reverseSel :: (Functor f) => (Sel (Reverse f) -> Sel (Reverse f)) -> Sel f -> Sel f
+reverseSel f = hoistSel getReverse . f . hoistSel Reverse
+
+mapSel :: (Functor f) => (f (Sel f) -> f (Sel f)) -> Sel f -> Sel f
+mapSel f = Fix . go . unFix
+  where
+    go = \case
+      Selected x -> Selected x
+      NotSelected x -> NotSelected x
+      PartiallySelected tx -> PartiallySelected $ mapSel f <$> f tx
 
 select :: (Functor f) => Sel f -> Sel f
 select = Fix . Selected . unSel
@@ -98,11 +103,25 @@ deselect = Fix . NotSelected . unSel
 
 data Select = Select | Deselect
 
-genericReselect
-  :: (Traversable t, Functor t')
-  => t (Sel t')
-  -> (t (Sel t'), Select)
-genericReselect =
+selectNextOrNone :: (Traversable t) => Sel t -> Sel t
+selectNextOrNone = mapSel $ fst . genericSelectNext
+
+selectNextOrSame :: (Traversable t) => Sel t -> Sel t
+selectNextOrSame = mapSel \x -> case genericSelectNext x of
+  (x', Select) -> alsoSelectLast x'
+  (x', Deselect) -> x'
+
+selectPrevOrNone :: (Traversable t) => Sel t -> Sel t
+selectPrevOrNone = reverseSel selectNextOrNone
+
+selectPrevOrSame :: (Traversable t) => Sel t -> Sel t
+selectPrevOrSame = reverseSel selectNextOrSame
+
+genericSelectNext
+  :: (Traversable t, Functor f)
+  => t (Sel f)
+  -> (t (Sel f), Select)
+genericSelectNext =
   flip runState Deselect . traverse \x -> state \selThis ->
     first Fix case (unFix x, selThis) of
       (Selected fx, Select) -> (Selected fx, Select)
@@ -112,25 +131,11 @@ genericReselect =
       (PartiallySelected fx, Select) -> (Selected (unSel x), Deselect)
       (PartiallySelected fx, Deselect) -> (PartiallySelected fx, Deselect)
 
-selectNextOrNone :: (Traversable t, Functor t') => t (Sel t') -> t (Sel t')
-selectNextOrNone = fst . genericReselect
-
-selectNextOrSame :: (Traversable t, Functor t') => t (Sel t') -> t (Sel t')
-selectNextOrSame x = case genericReselect x of
-  (x', Select) -> alsoSelectLast x'
-  (x', Deselect) -> x'
-
 alsoSelectFirst :: (Traversable t, Functor f) => t (Sel f) -> t (Sel f)
 alsoSelectFirst =
   flip evalState Select . traverse \x -> state \case
     Select -> (select x, Deselect)
     Deselect -> (x, Deselect)
 
-selectPrevOrNone :: (Traversable t, Functor t') => t (Sel t') -> t (Sel t')
-selectPrevOrNone = reverseSel selectNextOrNone
-
-selectPrevOrSame :: (Traversable t, Functor t') => t (Sel t') -> t (Sel t')
-selectPrevOrSame = reverseSel selectNextOrSame
-
 alsoSelectLast :: (Traversable t, Functor f) => t (Sel f) -> t (Sel f)
-alsoSelectLast = reverseSel alsoSelectFirst
+alsoSelectLast = getReverse . alsoSelectFirst . Reverse
