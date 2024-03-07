@@ -19,6 +19,7 @@ let
       process
       text
       vty
+      vty-unix
     ]);
 
 in pkgs.mkShell {

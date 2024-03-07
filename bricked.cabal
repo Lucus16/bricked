@@ -12,7 +12,6 @@ library
   build-depends:
       base
     , aeson
-    , brick
     , containers
     , data-fix
     , mtl
@@ -26,7 +25,6 @@ library
 
   default-extensions:
     BlockArguments
-    DataKinds
     ImportQualifiedPost
     LambdaCase
     StrictData
@@ -40,22 +38,22 @@ executable example
   ghc-options:           -threaded
   default-language:      GHC2021
 
-  other-modules:
-    Data.List.Zipper
-
   build-depends:
       aeson
     , base
-    , brick
+    , bricked
     , bytestring
     , cursor
     , directory
+    , mtl
     , text
-    , text-zipper
     , time
+    , transformers
     , vty
+    , vty-unix
 
   default-extensions:
-    ImportQualifiedPost
     BlockArguments
+    ImportQualifiedPost
+    LambdaCase
     StrictData
